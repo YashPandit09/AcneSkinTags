@@ -9,12 +9,13 @@ import os
 # ======================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(BASE_DIR, 'Dataset')
-METADATA_CSV = os.path.join(DATASET_DIR, 'HAM10000_metadata.csv')
+HAM_BASE_DIR = os.path.join(DATASET_DIR, 'HAM10000')  # HAM10000 subdirectory
+METADATA_CSV = os.path.join(HAM_BASE_DIR, 'HAM10000_metadata.csv')
 
 # Image directories
 IMAGE_DIRS = [
-    os.path.join(DATASET_DIR, 'HAM10000_images_part_1'),
-    os.path.join(DATASET_DIR, 'HAM10000_images_part_2')
+    os.path.join(HAM_BASE_DIR, 'HAM10000_images_part_1'),
+    os.path.join(HAM_BASE_DIR, 'HAM10000_images_part_2')
 ]
 
 # Class Labels (8 skin lesion types - 7 cancers + Acne)
@@ -59,7 +60,7 @@ AUGMENTATION_CONFIG = {
 # ======================
 # TRAINING CONFIGURATION
 # ======================
-BATCH_SIZE = 32
+BATCH_SIZE = 64  # Increased from 32 for RTX 3050 (reduce to 32 if OOM)
 EPOCHS = 25
 VALIDATION_SPLIT = 0.10  # 10% of train+val for validation
 TEST_SPLIT = 0.20  # 20% for final testing
@@ -147,6 +148,18 @@ DEFAULT_MODEL_FOR_DEMO = 'efficientnet-b3'  # Best model for demo
 # ======================
 VERBOSE = 1  # TensorFlow verbosity (0=silent, 1=progress bar, 2=one line per epoch)
 LOG_FILE = os.path.join(RESULTS_DIR, 'training_log.txt')
+
+# ======================
+# GPU OPTIMIZATION
+# ======================
+USE_MIXED_PRECISION = True  # Enable AMP for 1.5-2x speedup on RTX 3050
+GPU_MEMORY_GROWTH = True  # Prevent TensorFlow from allocating all GPU memory
+GPU_MEMORY_LIMIT_MB = None  # Optional: Set to 3072 to limit to 3GB
+
+# Data pipeline optimization
+USE_TF_DATA_PIPELINE = True  # Use tf.data with prefetch (faster than ImageDataGenerator)
+PREFETCH_BUFFER_SIZE = 'AUTOTUNE'  # Let TensorFlow auto-tune prefetch buffer
+CACHE_DATASET = False  # Set to True if dataset fits in RAM (not recommended for HAM10000)
 
 if __name__ == "__main__":
     # Test configuration

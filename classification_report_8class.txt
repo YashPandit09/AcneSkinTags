@@ -1,0 +1,18 @@
+================================================================================
+8-CLASS MODEL CLASSIFICATION REPORT
+================================================================================
+
+                               precision    recall  f1-score   support
+
+             Melanocytic nevi     0.8610    0.9509    0.9038      6705
+                     Melanoma     0.5711    0.4223    0.4855      1113
+Benign keratosis-like lesions     0.6266    0.5787    0.6017      1099
+         Basal cell carcinoma     0.8065    0.5759    0.6720       514
+            Actinic keratoses     0.6680    0.5291    0.5904       327
+             Vascular lesions     0.9080    0.5563    0.6900       142
+               Dermatofibroma     0.7414    0.3739    0.4971       115
+                         Acne     0.9936    0.9968    0.9952       312
+
+                     accuracy                         0.8119     10327
+                    macro avg     0.7720    0.6230    0.6795     10327
+                 weighted avg     0.7993    0.8119    0.8004     10327

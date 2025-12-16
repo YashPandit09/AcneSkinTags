@@ -1,26 +1,21 @@
 """
-Derm-X Analyzer - Streamlit Web Application
-Steps 18-20: Frontend, Backend Connection, and Results Display
+Derm-X Analyzer - PyTorch Version
+8-Class Skin Lesion Classification with Explainability
+Using best_model_8class_pytorch.pth (81.19% accuracy)
 """
 import streamlit as st
+import torch
+import torch.nn as nn
+from torchvision import models, transforms
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
 from PIL import Image
 import cv2
-import os
-import sys
 import matplotlib.pyplot as plt
-
-# Add project root to path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-import config
-from preprocessing.normalization import normalize_imagenet
-from explainability.gradcam import make_gradcam_heatmap, overlay_heatmap_on_image, get_last_conv_layer_name
+import os
 
 # Page configuration
 st.set_page_config(
-    page_title="Derm-X Analyzer",
+    page_title="Derm-X Analyzer (PyTorch)",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -38,7 +33,7 @@ st.markdown("""
     }
     .sub-header {
         font-size: 1.2rem;
-        color: #666;
+        color: #555;
         text-align: center;
         margin-bottom: 2rem;
     }
@@ -48,6 +43,10 @@ st.markdown("""
         border-radius: 10px;
         border-left: 5px solid #1E88E5;
         margin: 20px 0;
+        color: #000 !important;
+    }
+    .prediction-box h2, .prediction-box h3, .prediction-box p {
+        color: inherit !important;
     }
     .warning-box {
         background-color: #FFF3E0;
@@ -55,79 +54,163 @@ st.markdown("""
         border-radius: 5px;
         border-left: 5px solid #FF9800;
         margin: 10px 0;
+        color: #000 !important;
+    }
+    .warning-box strong {
+        color: #E65100 !important;
+    }
+    .success-box {
+        background-color: #E8F5E9;
+        padding: 15px;
+        border-radius: 5px;
+        border-left: 5px solid #4CAF50;
+        margin: 10px 0;
+        color: #000 !important;
+    }
+    .success-box strong {
+        color: #2E7D32 !important;
+    }
+    /* Fix Streamlit default text colors */
+    .stMarkdown p {
+        color: #333 !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# Class names in training order
+CLASS_NAMES = [
+    'Melanocytic nevi',           # 0: nv
+    'Melanoma',                   # 1: mel
+    'Benign keratosis-like lesions',  # 2: bkl
+    'Basal cell carcinoma',       # 3: bcc
+    'Actinic keratoses',          # 4: akiec
+    'Vascular lesions',           # 5: vasc
+    'Dermatofibroma',             # 6: df
+    'Acne'                        # 7: acne
+]
+
 @st.cache_resource
-def load_model(model_path):
-    """
-    Step 19: Load the trained model (cached for performance)
-    """
+def load_pytorch_model(model_path='best_model_8class_pytorch.pth'):
+    """Load the PyTorch 8-class model"""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Build model architecture
+    model = models.mobilenet_v2(weights='DEFAULT')
+    model.classifier = nn.Sequential(
+        nn.Dropout(0.5),
+        nn.Linear(model.last_channel, 8)
+    )
+    
+    # Load weights
     try:
-        model = keras.models.load_model(model_path)
-        return model
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model = model.to(device)
+        model.eval()
+        return model, device
     except Exception as e:
         st.error(f"Error loading model: {e}")
-        return None
+        return None, device
 
 def preprocess_image(image):
-    """
-    Step 19: Preprocess uploaded image
-    - Resize to 224x224
-    - Normalize by dividing by 255 (SAME AS TRAINING)
+    """Preprocess image for PyTorch model"""
+    # Resize
+    img_resized = cv2.resize(np.array(image), (224, 224))
     
-    CRITICAL: This must match the preprocessing used during training!
-    Training used ImageDataGenerator which rescales to [0, 1] via /255
-    """
-    # Convert PIL to numpy
-    img_array = np.array(image)
+    # Apply transforms (same as training)
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
     
-    # Resize to 224x224
-    img_resized = cv2.resize(img_array, config.IMG_SIZE)
-    
-    # !!!CRITICAL FIX!!!
-    # Training used simple rescaling (/255), NOT ImageNet normalization
-    # We must use the SAME preprocessing
-    img_normalized = img_resized.astype(np.float32) / 255.0
-    
-    # REMOVED: ImageNet normalization (was causing bug)
-    # img_normalized = normalize_imagenet(img_resized)
-    
-    # Add batch dimension
-    img_batch = np.expand_dims(img_normalized, axis=0)
+    img_tensor = transform(Image.fromarray(img_resized))
+    img_batch = img_tensor.unsqueeze(0)
     
     return img_batch, img_resized
 
-def predict_with_gradcam(model, img_batch, img_original):
-    """
-    Make prediction and generate Grad-CAM explanation
-    """
-    # Make prediction
-    predictions = model.predict(img_batch, verbose=0)
-    pred_class_idx = np.argmax(predictions[0])
-    confidence = predictions[0][pred_class_idx]
+def generate_gradcam(model, img_tensor, target_layer, device):
+    """Generate Grad-CAM heatmap"""
+    model.eval()
     
-    # Get class names
-    class_names = list(config.LESION_TYPE_DICT.values())
-    pred_class_name = class_names[pred_class_idx]
+    # Forward pass
+    img_tensor = img_tensor.to(device)
+    
+    # Hook to capture gradients and activations
+    gradients = []
+    activations = []
+    
+    def backward_hook(module, grad_input, grad_output):
+        gradients.append(grad_output[0])
+    
+    def forward_hook(module, input, output):
+        activations.append(output)
+    
+    # Register hooks
+    handle_forward = target_layer.register_forward_hook(forward_hook)
+    handle_backward = target_layer.register_full_backward_hook(backward_hook)
+    
+    # Forward
+    output = model(img_tensor)
+    pred_class = output.argmax(dim=1).item()
+    
+    # Backward
+    model.zero_grad()
+    class_loss = output[0, pred_class]
+    class_loss.backward()
+    
+    # Compute CAM
+    grads = gradients[0][0].cpu().data.numpy()
+    acts = activations[0][0].cpu().data.numpy()
+    
+    weights = np.mean(grads, axis=(1, 2))
+    cam = np.zeros(acts.shape[1:], dtype=np.float32)
+    
+    for i, w in enumerate(weights):
+        cam += w * acts[i]
+    
+    cam = np.maximum(cam, 0)
+    cam = cv2.resize(cam, (224, 224))
+    cam = cam - np.min(cam)
+    cam = cam / (np.max(cam) + 1e-8)
+    
+    # Cleanup
+    handle_forward.remove()
+    handle_backward.remove()
+    
+    return cam, output
+
+def overlay_heatmap(img, heatmap, alpha=0.4):
+    """Overlay heatmap on image"""
+    heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
+    heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+    
+    superimposed = heatmap_colored * alpha + img * (1 - alpha)
+    return superimposed.astype(np.uint8)
+
+def predict_with_gradcam(model, img_batch, img_original, device):
+    """Make prediction with Grad-CAM"""
+    # Predict
+    with torch.no_grad():
+        output = model(img_batch.to(device))
+        probabilities = torch.softmax(output, dim=1)[0]
+        pred_idx = output.argmax(dim=1).item()
+        confidence = probabilities[pred_idx].item()
+    
+    pred_class = CLASS_NAMES[pred_idx]
     
     # Generate Grad-CAM
     try:
-        last_conv_layer = get_last_conv_layer_name(model)
-        heatmap = make_gradcam_heatmap(img_batch, model, last_conv_layer)
-        superimposed = overlay_heatmap_on_image(img_original, heatmap)
+        target_layer = model.features[-1]
+        heatmap, _ = generate_gradcam(model, img_batch, target_layer, device)
+        superimposed = overlay_heatmap(img_original, heatmap)
     except Exception as e:
         st.warning(f"Could not generate Grad-CAM: {e}")
         heatmap = None
         superimposed = None
     
-    return pred_class_name, confidence, predictions[0], heatmap, superimposed
+    return pred_class, confidence, probabilities.cpu().numpy(), superimposed
 
 def get_disease_info(disease_name):
-    """
-    Provide medical information about the disease
-    """
+    """Get disease information"""
     info = {
         'Melanoma': {
             'description': 'A serious form of skin cancer that develops in melanocytes.',
@@ -177,45 +260,33 @@ def get_disease_info(disease_name):
     })
 
 def main():
-    # Step 18: Create the Frontend
+    # Header
     st.markdown('<div class="main-header">🔬 Derm-X Analyzer</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">AI-Powered Skin Lesion Detection with Explainable AI</div>', 
+    st.markdown('<div class="sub-header">AI-Powered 8-Class Skin Lesion Detection | PyTorch | 81.19% Accuracy</div>', 
                 unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Settings")
         
-        # Model selection
-        model_options = {
-            "MobileNetV2 (Fast)": "saved_models/mobilenetv2_best.keras",
-            "ResNet50 (Balanced)": "saved_models/resnet50_best.keras",
-            "EfficientNet-B3 (Accurate)": "saved_models/efficientnet-b3_best.keras"
-        }
+        st.markdown("""
+        <div class="success-box">
+            <strong>✓ Model Loaded:</strong><br>
+            PyTorch MobileNetV2 (8-Class)<br>
+            Accuracy: <strong>81.19%</strong><br>
+            Acne Detection: <strong>99.68%</strong>
+        </div>
+        """, unsafe_allow_html=True)
         
-        selected_model_name = st.selectbox(
-            "Select Model",
-            list(model_options.keys()),
-            help="Choose the AI model for analysis"
-        )
-        
-        model_path = model_options[selected_model_name]
-        
-        # Check if custom model path exists
-        if not os.path.exists(model_path):
-            st.warning(f"Model not found at: {model_path}")
-            custom_path = st.text_input("Enter custom model path:", 
-                                         value="./best_model.keras")
-            if os.path.exists(custom_path):
-                model_path = custom_path
-                st.success("Custom model loaded!")
+        device_info = "GPU (CUDA)" if torch.cuda.is_available() else "CPU"
+        st.info(f"🖥️ Running on: **{device_info}**")
         
         st.markdown("---")
         
         # About
         st.header("ℹ️ About")
         st.info("""
-        **Derm-X** uses deep learning to classify 8 types of skin conditions:
+        **Derm-X (PyTorch Edition)** classifies 8 types of skin conditions:
         
         **Cancers & Pre-cancerous:**
         1. Melanoma
@@ -229,7 +300,12 @@ def main():
         7. Dermatofibroma
         
         **Common Conditions:**
-        8. Acne
+        8. **Acne** (NEW!)
+        
+        **Model Performance:**
+        - Overall: 81.19% accuracy
+        - Acne: 99.68% precision
+        - Training: 10,327 images
         
         **Disclaimer:** This is a research tool and should NOT replace professional medical diagnosis.
         """)
@@ -240,7 +316,6 @@ def main():
     with col1:
         st.header("📤 Upload Image")
         
-        # Step 18: File uploader
         uploaded_file = st.file_uploader(
             "Choose a skin lesion image (JPG, PNG)",
             type=['jpg', 'jpeg', 'png'],
@@ -254,34 +329,32 @@ def main():
             
             # Analyze button
             if st.button("🔍 Analyze Image", type="primary", use_container_width=True):
-                with st.spinner("Loading AI model..."):
-                    model = load_model(model_path)
+                with st.spinner("Loading PyTorch model..."):
+                    model, device = load_pytorch_model()
                 
                 if model is not None:
                     with st.spinner("Analyzing image..."):
-                        # Step 19: Preprocess
+                        # Preprocess
                         img_batch, img_resized = preprocess_image(image)
                         
                         # Predict
-                        pred_class, confidence, all_probs, heatmap, superimposed = predict_with_gradcam(
-                            model, img_batch, img_resized
+                        pred_class, confidence, all_probs, superimposed = predict_with_gradcam(
+                            model, img_batch, img_resized, device
                         )
                         
-                        # Store results in session state
+                        # Store results
                         st.session_state.prediction = pred_class
                         st.session_state.confidence = confidence
                         st.session_state.all_probs = all_probs
                         st.session_state.superimposed = superimposed
-                        st.session_state.heatmap = heatmap
                         st.session_state.img_resized = img_resized
                     
-                    st.success("Analysis complete!")
+                    st.success("✓ Analysis complete!")
     
     with col2:
         st.header("📊 Results")
         
         if 'prediction' in st.session_state:
-            # Step 20: Display Results
             pred_class = st.session_state.prediction
             confidence = st.session_state.confidence
             all_probs = st.session_state.all_probs
@@ -306,7 +379,7 @@ def main():
             </div>
             """, unsafe_allow_html=True)
             
-            # Warning disclaimer
+            # Warning
             st.markdown("""
             <div class="warning-box">
                 <strong>⚠️ Medical Disclaimer:</strong> This AI prediction is for research purposes only. 
@@ -316,19 +389,16 @@ def main():
             
             # Probability distribution
             st.subheader("📈 Confidence Distribution")
-            class_names = list(config.LESION_TYPE_DICT.values())
-            prob_data = {name: float(prob) for name, prob in zip(class_names, all_probs)}
+            prob_data = {name: float(prob) for name, prob in zip(CLASS_NAMES, all_probs)}
             prob_data = dict(sorted(prob_data.items(), key=lambda x: x[1], reverse=True))
             
-            # Bar chart
             st.bar_chart(prob_data, use_container_width=True)
             
-            # Grad-CAM visualization
+            # Grad-CAM
             if st.session_state.superimposed is not None:
                 st.subheader("🔍 Explainability (Grad-CAM)")
                 st.caption("Red regions show where the AI focused to make its decision")
                 
-                # Display comparison
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.image(st.session_state.img_resized, 
@@ -336,7 +406,7 @@ def main():
                             use_column_width=True)
                 with col_b:
                     st.image(st.session_state.superimposed, 
-                            caption="AI Focus Areas (Grad-CAM)", 
+                            caption="AI Focus Areas", 
                             use_column_width=True)
                 
                 st.success("✓ Verification: Red regions should highlight the lesion")
@@ -348,11 +418,15 @@ def main():
     st.markdown("""
     <div style="text-align: center; color: #666; font-size: 0.9rem;">
         <p>
-            Built with ❤️ using TensorFlow & Streamlit | 
-            Powered by Deep Learning & Explainable AI
+            Built with ❤️ using PyTorch & Streamlit | 
+            Powered by GPU-Accelerated Deep Learning
         </p>
         <p style="font-size: 0.8rem;">
-            Dataset: HAM10000 | Architecture: MobileNetV2 / ResNet50 / EfficientNet
+            Dataset: HAM10000 + DermNet | Architecture: MobileNetV2 | 
+            Training: Mixed Precision (AMP) on RTX 3050
+        </p>
+        <p style="font-size: 0.8rem;">
+            <strong>Model Stats:</strong> 81.19% accuracy | 10,327 training images | 8 classes
         </p>
     </div>
     """, unsafe_allow_html=True)
