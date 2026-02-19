@@ -1,435 +1,576 @@
 """
-Derm-X Analyzer - PyTorch Version
-8-Class Skin Lesion Classification with Explainability
-Using best_model_8class_pytorch.pth (81.19% accuracy)
+Derm-X Analyzer — Enhanced Streamlit Frontend
+Imports all inference logic from inference_engine.py.
 """
+
 import streamlit as st
-import torch
-import torch.nn as nn
-from torchvision import models, transforms
 import numpy as np
 from PIL import Image
-import cv2
-import matplotlib.pyplot as plt
-import os
 
-# Page configuration
-st.set_page_config(
-    page_title="Derm-X Analyzer (PyTorch)",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded"
+from inference_engine import (
+    load_model,
+    predict,
+    overlay_heatmap,
+    CLASS_NAMES,
 )
 
-# Custom CSS
+# ================================================================
+# PAGE CONFIG
+# ================================================================
+st.set_page_config(
+    page_title="Derm-X Analyzer",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ================================================================
+# NATURAL-PALETTE CSS — sage / sand / warm-stone glassmorphism
+# ================================================================
+#
+# Palette anchors:
+#   Background  — pale sage #e8efe5 → warm sand #f5f0e8
+#   Glass cards — rgba(255,255,255,0.55) with subtle blur
+#   Text body   — warm charcoal #3a3a38
+#   Headings    — deep olive-stone #4b5548
+#   Accents     — muted terracotta #b5694d, soft teal #5a8f7b
+#   Risk High   — rosewood #b94a48
+#   Risk Mod    — warm amber #c08b30
+#   Risk Low    — sage green #5a8f7b
+
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 3rem;
-        color: #1E88E5;
-        text-align: center;
-        font-weight: bold;
-        margin-bottom: 1rem;
-    }
-    .sub-header {
-        font-size: 1.2rem;
-        color: #555;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .prediction-box {
-        background-color: #E3F2FD;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #1E88E5;
-        margin: 20px 0;
-        color: #000 !important;
-    }
-    .prediction-box h2, .prediction-box h3, .prediction-box p {
-        color: inherit !important;
-    }
-    .warning-box {
-        background-color: #FFF3E0;
-        padding: 15px;
-        border-radius: 5px;
-        border-left: 5px solid #FF9800;
-        margin: 10px 0;
-        color: #000 !important;
-    }
-    .warning-box strong {
-        color: #E65100 !important;
-    }
-    .success-box {
-        background-color: #E8F5E9;
-        padding: 15px;
-        border-radius: 5px;
-        border-left: 5px solid #4CAF50;
-        margin: 10px 0;
-        color: #000 !important;
-    }
-    .success-box strong {
-        color: #2E7D32 !important;
-    }
-    /* Fix Streamlit default text colors */
-    .stMarkdown p {
-        color: #333 !important;
-    }
+/* ---- Hide Streamlit chrome ---- */
+#MainMenu {visibility: hidden;}
+footer    {visibility: hidden;}
+header    {visibility: hidden;}
+
+/* ---- Typography ---- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+html, body, [class*="st-"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* ---- Natural gradient background ---- */
+.stApp {
+    background: linear-gradient(165deg, #e8efe5 0%, #eef2ea 35%, #f5f0e8 100%);
+}
+
+/* ---- Glass card (organic) ---- */
+.glass-card {
+    background: rgba(255, 255, 255, 0.55);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border: 1px solid rgba(90, 143, 123, 0.12);
+    border-radius: 24px;
+    padding: 28px;
+    margin-bottom: 20px;
+    box-shadow: 0 6px 28px rgba(75, 85, 72, 0.08);
+}
+
+/* ---- Result cards (risk levels) ---- */
+.result-card-high {
+    background: linear-gradient(135deg, rgba(185,74,72,0.10), rgba(185,74,72,0.04));
+    border: 1px solid rgba(185,74,72,0.25);
+    border-radius: 20px;
+    padding: 24px;
+    margin: 12px 0;
+}
+.result-card-moderate {
+    background: linear-gradient(135deg, rgba(192,139,48,0.10), rgba(192,139,48,0.04));
+    border: 1px solid rgba(192,139,48,0.25);
+    border-radius: 20px;
+    padding: 24px;
+    margin: 12px 0;
+}
+.result-card-low {
+    background: linear-gradient(135deg, rgba(90,143,123,0.10), rgba(90,143,123,0.04));
+    border: 1px solid rgba(90,143,123,0.25);
+    border-radius: 20px;
+    padding: 24px;
+    margin: 12px 0;
+}
+
+/* ---- Risk badges ---- */
+.badge-high     { color:#b94a48; background:rgba(185,74,72,0.12);  padding:5px 14px; border-radius:24px; font-size:0.75rem; font-weight:600; }
+.badge-moderate { color:#96700f; background:rgba(192,139,48,0.12); padding:5px 14px; border-radius:24px; font-size:0.75rem; font-weight:600; }
+.badge-low      { color:#3d6f5a; background:rgba(90,143,123,0.12); padding:5px 14px; border-radius:24px; font-size:0.75rem; font-weight:600; }
+
+/* ---- Image containers ---- */
+.image-frame {
+    border-radius: 20px;
+    overflow: hidden;
+    border: 1px solid rgba(75, 85, 72, 0.08);
+    box-shadow: 0 4px 20px rgba(75, 85, 72, 0.10);
+}
+.image-frame img {
+    border-radius: 20px;
+}
+
+/* ---- Section headers ---- */
+.section-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #8a9184;
+    text-transform: uppercase;
+    letter-spacing: 1.6px;
+    margin-bottom: 12px;
+}
+
+/* ---- Hero header ---- */
+.hero-title {
+    font-size: 2.6rem;
+    font-weight: 700;
+    background: linear-gradient(90deg, #4b5548, #5a8f7b, #b5694d);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-align: center;
+    margin-bottom: 0px;
+    letter-spacing: -0.5px;
+}
+.hero-subtitle {
+    font-size: 1.05rem;
+    color: #8a9184;
+    text-align: center;
+    margin-bottom: 2rem;
+    font-weight: 300;
+}
+
+/* ---- Sidebar ---- */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #e2eadf 0%, #f0ede6 100%);
+    border-right: 1px solid rgba(75, 85, 72, 0.08);
+}
+section[data-testid="stSidebar"] .stMarkdown p,
+section[data-testid="stSidebar"] .stMarkdown li {
+    color: #555a52;
+    font-size: 0.88rem;
+}
+section[data-testid="stSidebar"] .stMarkdown h3 {
+    color: #4b5548;
+}
+
+/* ---- Metrics ---- */
+[data-testid="stMetricValue"] {
+    font-size: 2.2rem !important;
+    font-weight: 700 !important;
+    color: #3a3a38 !important;
+}
+[data-testid="stMetricLabel"] {
+    color: #8a9184 !important;
+}
+
+/* ---- Button ---- */
+.stButton > button {
+    background: linear-gradient(135deg, #5a8f7b, #73a690) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 16px !important;
+    padding: 0.6rem 1.5rem !important;
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+    transition: all 0.3s ease !important;
+    box-shadow: 0 4px 14px rgba(90,143,123,0.25) !important;
+}
+.stButton > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 20px rgba(90,143,123,0.40) !important;
+}
+
+/* ---- File uploader ---- */
+[data-testid="stFileUploader"] {
+    border: 2px dashed rgba(75, 85, 72, 0.15) !important;
+    border-radius: 20px !important;
+    padding: 16px !important;
+}
+
+/* ---- Disclaimer box ---- */
+.disclaimer {
+    background: rgba(192,139,48,0.06);
+    border: 1px solid rgba(192,139,48,0.18);
+    border-radius: 16px;
+    padding: 14px 18px;
+    font-size: 0.82rem;
+    color: #6b5e4b;
+    margin-top: 16px;
+}
+
+/* ---- Footer ---- */
+.app-footer {
+    text-align: center;
+    color: #aeb5a8;
+    font-size: 0.78rem;
+    padding: 40px 0 20px 0;
+    border-top: 1px solid rgba(75, 85, 72, 0.06);
+    margin-top: 48px;
+}
+
+/* ---- Ensure readable body text on light bg ---- */
+.stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span,
+.stCaption, .stTextInput label, [data-testid="stWidgetLabel"] {
+    color: #3a3a38 !important;
+}
+
+/* ---- Protect Streamlit internal icon fonts ---- */
+.st-emotion-cache-1gfk4cg,
+.material-symbols-rounded,
+span[data-testid="stIconMaterial"] {
+    font-family: 'Material Symbols Rounded' !important;
+    font-size: 1.25rem !important;
+}
+button[data-testid="stExpanderToggleIcon"] {
+    font-family: 'Material Symbols Rounded' !important;
+}
+
+/* ---- Expander container — visible on light bg ---- */
+[data-testid="stExpander"] {
+    background: rgba(90, 143, 123, 0.06);
+    border: 1px solid rgba(90, 143, 123, 0.15);
+    border-radius: 20px;
+    overflow: hidden;
+}
+[data-testid="stExpander"] summary {
+    font-weight: 600;
+    color: #4b5548;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# Class names in training order
-CLASS_NAMES = [
-    'Melanocytic nevi',           # 0: nv
-    'Melanoma',                   # 1: mel
-    'Benign keratosis-like lesions',  # 2: bkl
-    'Basal cell carcinoma',       # 3: bcc
-    'Actinic keratoses',          # 4: akiec
-    'Vascular lesions',           # 5: vasc
-    'Dermatofibroma',             # 6: df
-    'Acne'                        # 7: acne
-]
 
-@st.cache_resource
-def load_pytorch_model(model_path='best_model_8class_pytorch.pth'):
-    """Load the PyTorch 8-class model"""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Build model architecture
-    model = models.mobilenet_v2(weights='DEFAULT')
-    model.classifier = nn.Sequential(
-        nn.Dropout(0.5),
-        nn.Linear(model.last_channel, 8)
-    )
-    
-    # Load weights
-    try:
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        model = model.to(device)
-        model.eval()
-        return model, device
-    except Exception as e:
-        st.error(f"Error loading model: {e}")
-        return None, device
-
-def preprocess_image(image):
-    """Preprocess image for PyTorch model"""
-    # Resize
-    img_resized = cv2.resize(np.array(image), (224, 224))
-    
-    # Apply transforms (same as training)
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    
-    img_tensor = transform(Image.fromarray(img_resized))
-    img_batch = img_tensor.unsqueeze(0)
-    
-    return img_batch, img_resized
-
-def generate_gradcam(model, img_tensor, target_layer, device):
-    """Generate Grad-CAM heatmap"""
-    model.eval()
-    
-    # Forward pass
-    img_tensor = img_tensor.to(device)
-    
-    # Hook to capture gradients and activations
-    gradients = []
-    activations = []
-    
-    def backward_hook(module, grad_input, grad_output):
-        gradients.append(grad_output[0])
-    
-    def forward_hook(module, input, output):
-        activations.append(output)
-    
-    # Register hooks
-    handle_forward = target_layer.register_forward_hook(forward_hook)
-    handle_backward = target_layer.register_full_backward_hook(backward_hook)
-    
-    # Forward
-    output = model(img_tensor)
-    pred_class = output.argmax(dim=1).item()
-    
-    # Backward
-    model.zero_grad()
-    class_loss = output[0, pred_class]
-    class_loss.backward()
-    
-    # Compute CAM
-    grads = gradients[0][0].cpu().data.numpy()
-    acts = activations[0][0].cpu().data.numpy()
-    
-    weights = np.mean(grads, axis=(1, 2))
-    cam = np.zeros(acts.shape[1:], dtype=np.float32)
-    
-    for i, w in enumerate(weights):
-        cam += w * acts[i]
-    
-    cam = np.maximum(cam, 0)
-    cam = cv2.resize(cam, (224, 224))
-    cam = cam - np.min(cam)
-    cam = cam / (np.max(cam) + 1e-8)
-    
-    # Cleanup
-    handle_forward.remove()
-    handle_backward.remove()
-    
-    return cam, output
-
-def overlay_heatmap(img, heatmap, alpha=0.4):
-    """Overlay heatmap on image"""
-    heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
-    heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
-    
-    superimposed = heatmap_colored * alpha + img * (1 - alpha)
-    return superimposed.astype(np.uint8)
-
-def predict_with_gradcam(model, img_batch, img_original, device):
-    """Make prediction with Grad-CAM"""
-    # Predict
-    with torch.no_grad():
-        output = model(img_batch.to(device))
-        probabilities = torch.softmax(output, dim=1)[0]
-        pred_idx = output.argmax(dim=1).item()
-        confidence = probabilities[pred_idx].item()
-    
-    pred_class = CLASS_NAMES[pred_idx]
-    
-    # Generate Grad-CAM
-    try:
-        target_layer = model.features[-1]
-        heatmap, _ = generate_gradcam(model, img_batch, target_layer, device)
-        superimposed = overlay_heatmap(img_original, heatmap)
-    except Exception as e:
-        st.warning(f"Could not generate Grad-CAM: {e}")
-        heatmap = None
-        superimposed = None
-    
-    return pred_class, confidence, probabilities.cpu().numpy(), superimposed
-
-def get_disease_info(disease_name):
-    """Get disease information"""
-    info = {
-        'Melanoma': {
-            'description': 'A serious form of skin cancer that develops in melanocytes.',
-            'severity': 'HIGH RISK - Requires immediate medical attention',
-            'color': '#D32F2F'
-        },
-        'Basal cell carcinoma': {
-            'description': 'The most common type of skin cancer, usually slow-growing.',
-            'severity': 'MODERATE RISK - Consult a dermatologist soon',
-            'color': '#F57C00'
-        },
-        'Melanocytic nevi': {
-            'description': 'Common moles that are usually benign.',
-            'severity': 'LOW RISK - Monitor for changes',
-            'color': '#388E3C'
-        },
-        'Benign keratosis-like lesions': {
-            'description': 'Non-cancerous skin growths.',
-            'severity': 'LOW RISK - Generally harmless',
-            'color': '#388E3C'
-        },
-        'Actinic keratoses': {
-            'description': 'Pre-cancerous patches caused by sun damage.',
-            'severity': 'MODERATE RISK - Preventive treatment recommended',
-            'color': '#F57C00'
-        },
-        'Vascular lesions': {
-            'description': 'Blood vessel abnormalities in the skin.',
-            'severity': 'LOW RISK - Usually benign',
-            'color': '#388E3C'
-        },
-        'Dermatofibroma': {
-            'description': 'A common benign skin nodule.',
-            'severity': 'LOW RISK - Harmless',
-            'color': '#388E3C'
-        },
-        'Acne': {
-            'description': 'A common skin condition caused by clogged pores and bacteria.',
-            'severity': 'LOW RISK - Treatable with proper skincare',
-            'color': '#2196F3'
-        }
-    }
-    return info.get(disease_name, {
-        'description': 'Unknown condition',
-        'severity': 'UNKNOWN',
-        'color': '#757575'
-    })
-
-def main():
-    # Header
-    st.markdown('<div class="main-header">🔬 Derm-X Analyzer</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">AI-Powered 8-Class Skin Lesion Detection | PyTorch | 81.19% Accuracy</div>', 
-                unsafe_allow_html=True)
-    
-    # Sidebar
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        
-        st.markdown("""
-        <div class="success-box">
-            <strong>✓ Model Loaded:</strong><br>
-            PyTorch MobileNetV2 (8-Class)<br>
-            Accuracy: <strong>81.19%</strong><br>
-            Acne Detection: <strong>99.68%</strong>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        device_info = "GPU (CUDA)" if torch.cuda.is_available() else "CPU"
-        st.info(f"🖥️ Running on: **{device_info}**")
-        
-        st.markdown("---")
-        
-        # About
-        st.header("ℹ️ About")
-        st.info("""
-        **Derm-X (PyTorch Edition)** classifies 8 types of skin conditions:
-        
-        **Cancers & Pre-cancerous:**
-        1. Melanoma
-        2. Basal cell carcinoma
-        3. Actinic keratoses
-        
-        **Benign Lesions:**
-        4. Melanocytic nevi
-        5. Benign keratosis
-        6. Vascular lesions
-        7. Dermatofibroma
-        
-        **Common Conditions:**
-        8. **Acne** (NEW!)
-        
-        **Model Performance:**
-        - Overall: 81.19% accuracy
-        - Acne: 99.68% precision
-        - Training: 10,327 images
-        
-        **Disclaimer:** This is a research tool and should NOT replace professional medical diagnosis.
-        """)
-    
-    # Main content
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.header("📤 Upload Image")
-        
-        uploaded_file = st.file_uploader(
-            "Choose a skin lesion image (JPG, PNG)",
-            type=['jpg', 'jpeg', 'png'],
-            help="Upload a clear, well-lit image of the skin lesion"
-        )
-        
-        if uploaded_file is not None:
-            # Display uploaded image
-            image = Image.open(uploaded_file).convert('RGB')
-            st.image(image, caption='Uploaded Image', use_column_width=True)
-            
-            # Analyze button
-            if st.button("🔍 Analyze Image", type="primary", use_container_width=True):
-                with st.spinner("Loading PyTorch model..."):
-                    model, device = load_pytorch_model()
-                
-                if model is not None:
-                    with st.spinner("Analyzing image..."):
-                        # Preprocess
-                        img_batch, img_resized = preprocess_image(image)
-                        
-                        # Predict
-                        pred_class, confidence, all_probs, superimposed = predict_with_gradcam(
-                            model, img_batch, img_resized, device
-                        )
-                        
-                        # Store results
-                        st.session_state.prediction = pred_class
-                        st.session_state.confidence = confidence
-                        st.session_state.all_probs = all_probs
-                        st.session_state.superimposed = superimposed
-                        st.session_state.img_resized = img_resized
-                    
-                    st.success("✓ Analysis complete!")
-    
-    with col2:
-        st.header("📊 Results")
-        
-        if 'prediction' in st.session_state:
-            pred_class = st.session_state.prediction
-            confidence = st.session_state.confidence
-            all_probs = st.session_state.all_probs
-            
-            # Main prediction
-            disease_info = get_disease_info(pred_class)
-            
-            st.markdown(f"""
-            <div class="prediction-box">
-                <h2 style="margin: 0; color: {disease_info['color']};">
-                    {pred_class}
-                </h2>
-                <h3 style="margin: 10px 0;">
-                    Confidence: {confidence:.1%}
-                </h3>
-                <p style="margin: 5px 0;">
-                    {disease_info['description']}
-                </p>
-                <p style="margin: 5px 0; font-weight: bold; color: {disease_info['color']};">
-                    {disease_info['severity']}
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Warning
-            st.markdown("""
-            <div class="warning-box">
-                <strong>⚠️ Medical Disclaimer:</strong> This AI prediction is for research purposes only. 
-                Always consult a qualified dermatologist for proper diagnosis and treatment.
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Probability distribution
-            st.subheader("📈 Confidence Distribution")
-            prob_data = {name: float(prob) for name, prob in zip(CLASS_NAMES, all_probs)}
-            prob_data = dict(sorted(prob_data.items(), key=lambda x: x[1], reverse=True))
-            
-            st.bar_chart(prob_data, use_container_width=True)
-            
-            # Grad-CAM
-            if st.session_state.superimposed is not None:
-                st.subheader("🔍 Explainability (Grad-CAM)")
-                st.caption("Red regions show where the AI focused to make its decision")
-                
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.image(st.session_state.img_resized, 
-                            caption="Original", 
-                            use_column_width=True)
-                with col_b:
-                    st.image(st.session_state.superimposed, 
-                            caption="AI Focus Areas", 
-                            use_column_width=True)
-                
-                st.success("✓ Verification: Red regions should highlight the lesion")
-        else:
-            st.info("👆 Upload an image and click 'Analyze' to see results")
-    
-    # Footer
-    st.markdown("---")
+# ================================================================
+# SIDEBAR
+# ================================================================
+with st.sidebar:
+    st.markdown("### ⚙️ Model Info")
     st.markdown("""
-    <div style="text-align: center; color: #666; font-size: 0.9rem;">
-        <p>
-            Built with ❤️ using PyTorch & Streamlit | 
-            Powered by GPU-Accelerated Deep Learning
-        </p>
-        <p style="font-size: 0.8rem;">
-            Dataset: HAM10000 + DermNet | Architecture: MobileNetV2 | 
-            Training: Mixed Precision (AMP) on RTX 3050
-        </p>
-        <p style="font-size: 0.8rem;">
-            <strong>Model Stats:</strong> 81.19% accuracy | 10,327 training images | 8 classes
+    <div class="glass-card" style="padding:18px;">
+        <p style="margin:0; color:#3d6f5a; font-weight:600;">✅ Model Active</p>
+        <p style="margin:4px 0 0; font-size:0.85rem; color:#6b7a66;">
+            PyTorch MobileNetV2 · 8 Classes<br>
+            Accuracy: <strong style="color:#3a3a38;">81.19%</strong><br>
+            Acne Precision: <strong style="color:#3a3a38;">99.36%</strong>
         </p>
     </div>
     """, unsafe_allow_html=True)
 
-if __name__ == "__main__":
-    main()
+    import torch
+    device_label = "🟢 GPU (CUDA)" if torch.cuda.is_available() else "🔵 CPU"
+    st.info(f"Running on: **{device_label}**")
+
+    st.markdown("---")
+    st.markdown("### 📋 Supported Classes")
+    st.markdown("""
+    **Cancers & Pre-cancerous**
+    1. Melanoma
+    2. Basal cell carcinoma
+    3. Actinic keratoses
+
+    **Benign Lesions**
+    4. Melanocytic nevi
+    5. Benign keratosis
+    6. Vascular lesions
+    7. Dermatofibroma
+
+    **Common Conditions**
+    8. Acne
+    """)
+
+    st.markdown("---")
+    st.markdown("### 🩺 Patient Data (Optional)")
+    st.markdown("""
+    <div class="glass-card" style="padding:18px;">
+        <p style="margin:0 0 8px; font-size:0.82rem; color:#8a9184;">Attach optional context for your records.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    patient_age = st.number_input(
+        "Patient Age",
+        min_value=0,
+        max_value=120,
+        value=30,
+        step=1,
+        help="Patient's age in years.",
+    )
+    patient_gender = st.selectbox(
+        "Gender",
+        ["Not specified", "Male", "Female", "Other"],
+        help="Optional patient gender.",
+    )
+    patient_notes = st.text_area(
+        "Clinical Notes",
+        placeholder="e.g. lesion appeared 3 months ago, itchy...",
+        height=80,
+        help="Any relevant notes for your own reference.",
+    )
+
+    st.markdown("---")
+    st.markdown("""
+    <div class="disclaimer">
+        ⚠️ <strong>Disclaimer</strong>: This tool is for research &
+        educational purposes only. It does not replace professional
+        medical diagnosis.
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ================================================================
+# MAIN CONTENT
+# ================================================================
+
+# ---- Hero ----
+st.markdown('<p class="hero-title">🔬 Derm-X Analyzer</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="hero-subtitle">'
+    'AI-Powered Skin Lesion Classification · Grad-CAM Explainability'
+    '</p>',
+    unsafe_allow_html=True,
+)
+
+# ---- How-to expander ----
+with st.expander("How to use Derm-X Analyzer", expanded=False):
+    st.markdown("**Quick Guide**")
+    st.markdown("""
+    1. **Upload** a clear, well-lit dermoscopic image (JPG or PNG).
+    2. Click **Analyze Image** and wait a few seconds.
+    3. Review the **predicted class**, confidence score, and risk level.
+    4. Use the **Grad-CAM slider** to see exactly where the model focused.
+    5. Check the **confidence chart** to compare probabilities across all 8 classes.
+    """)
+    st.caption("For best results, ensure the lesion is centered and the image is not blurry.")
+
+# ---- Upload section ----
+st.markdown('<p class="section-title">Upload & Analyze</p>', unsafe_allow_html=True)
+
+uploaded_file = st.file_uploader(
+    "Drop a dermoscopic image here (JPG / PNG)",
+    type=["jpg", "jpeg", "png"],
+    help="Upload a clear, well-lit photo of the skin lesion.",
+)
+
+if uploaded_file is not None:
+    image = Image.open(uploaded_file).convert("RGB")
+
+    # Show upload preview in a compact column
+    col_up, _ = st.columns([1, 2])
+    with col_up:
+        st.image(image, caption="Uploaded image", use_container_width=True)
+
+    # ---- Analyze button ----
+    if st.button("🔍  Analyze Image", type="primary", use_container_width=True):
+        with st.spinner("Loading model & running inference …"):
+            model, device = load_model()
+            result = predict(model, image, device)
+
+        st.session_state["result"] = result
+
+# ================================================================
+# RESULTS SECTION
+# ================================================================
+if "result" in st.session_state:
+    res = st.session_state["result"]
+
+    st.markdown("---")
+    st.markdown('<p class="section-title">Diagnosis Results</p>', unsafe_allow_html=True)
+
+    # ---- Prediction metrics row ----
+    m1, m2, m3 = st.columns(3)
+    risk = res["disease_info"]["risk_level"]
+    with m1:
+        st.metric("Predicted Class", res["predicted_class"])
+    with m2:
+        st.metric("Confidence", f"{res['confidence']:.1%}")
+    with m3:
+        risk_emoji = {"high": "🔴", "moderate": "🟠", "low": "🟢"}.get(risk, "⚪")
+        st.metric("Risk Level", f"{risk_emoji} {risk.upper()}")
+
+    # ---- Detail card ----
+    card_class = f"result-card-{risk}"
+    badge_class = f"badge-{risk}"
+    st.markdown(f"""
+    <div class="{card_class}">
+        <span class="{badge_class}">{res['disease_info']['severity']}</span>
+        <p style="margin-top:12px; color:#3a3a38; font-size:0.95rem;">
+            {res['disease_info']['description']}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ---- Risk gauge chart ----
+    try:
+        import plotly.graph_objects as go
+
+        # Map risk level to gauge value (0-100 scale)
+        risk_score = res["confidence"] * 100
+        risk_label = res["disease_info"]["risk_level"]
+        gauge_color = {
+            "high": "#b94a48",       # rosewood
+            "moderate": "#c08b30",   # warm amber
+            "low": "#5a8f7b",        # sage green
+        }.get(risk_label, "#8a9184")
+
+        gauge_fig = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=risk_score,
+            number={"suffix": "%", "font": {"size": 36, "color": "#3a3a38", "family": "Inter"}},
+            title={"text": "Prediction Confidence", "font": {"size": 14, "color": "#8a9184", "family": "Inter"}},
+            gauge={
+                "axis": {"range": [0, 100], "tickcolor": "#8a9184", "tickfont": {"color": "#8a9184"}},
+                "bar": {"color": gauge_color, "thickness": 0.3},
+                "bgcolor": "rgba(0,0,0,0)",
+                "borderwidth": 0,
+                "steps": [
+                    {"range": [0, 30],  "color": "rgba(185,74,72,0.08)"},
+                    {"range": [30, 70], "color": "rgba(192,139,48,0.08)"},
+                    {"range": [70, 100], "color": "rgba(90,143,123,0.08)"},
+                ],
+                "threshold": {
+                    "line": {"color": "#3a3a38", "width": 5},
+                    "thickness": 0.85,
+                    "value": risk_score,
+                },
+            },
+        ))
+
+        gauge_fig.update_layout(
+            height=220,
+            margin=dict(l=30, r=30, t=40, b=10),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Inter, sans-serif"),
+        )
+
+        g_col1, g_col2, g_col3 = st.columns([1, 2, 1])
+        with g_col2:
+            st.plotly_chart(gauge_fig, use_container_width=True, config={"displayModeBar": False})
+
+    except ImportError:
+        pass  # Plotly not available; skip gauge
+
+    # ---- Side-by-side images: Original | Grad-CAM ----
+    st.markdown('<p class="section-title">Explainability — Grad-CAM</p>', unsafe_allow_html=True)
+
+    if res["heatmap"] is not None:
+        alpha = st.slider(
+            "Heatmap Opacity",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.45,
+            step=0.05,
+            help="Drag to adjust how strongly the Grad-CAM overlay is blended onto the image.",
+        )
+
+        overlay = overlay_heatmap(res["img_resized"], res["heatmap"], alpha=alpha)
+
+        col_orig, col_cam = st.columns(2)
+        with col_orig:
+            st.markdown('<div class="image-frame">', unsafe_allow_html=True)
+            st.image(res["img_resized"], caption="Original (224 × 224)", use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+        with col_cam:
+            st.markdown('<div class="image-frame">', unsafe_allow_html=True)
+            st.image(overlay, caption="Grad-CAM Overlay", use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        st.caption("🔍 Red/yellow regions show where the model focused to make its decision.")
+    else:
+        st.warning("Grad-CAM heatmap could not be generated for this image.")
+
+    # ---- Confidence distribution bar chart ----
+    st.markdown('<p class="section-title">Confidence Distribution (All 8 Classes)</p>', unsafe_allow_html=True)
+
+    probs = res["probabilities"]
+    sorted_probs = dict(sorted(probs.items(), key=lambda x: x[1], reverse=True))
+
+    # Build horizontal chart with Plotly — natural colour scheme
+    try:
+        import plotly.graph_objects as go
+
+        names = list(sorted_probs.keys())
+        values = [v * 100 for v in sorted_probs.values()]
+
+        # Colour bars by risk level using organic palette
+        from inference_engine import DISEASE_INFO
+        bar_colors = []
+        for name in names:
+            rl = DISEASE_INFO.get(name, {}).get("risk_level", "low")
+            if rl == "high":
+                bar_colors.append("rgba(185,74,72,0.70)")    # rosewood
+            elif rl == "moderate":
+                bar_colors.append("rgba(192,139,48,0.70)")   # warm amber
+            else:
+                bar_colors.append("rgba(90,143,123,0.70)")   # sage green
+
+        fig = go.Figure(go.Bar(
+            x=values,
+            y=names,
+            orientation="h",
+            marker=dict(
+                color=bar_colors,
+                line=dict(width=0),
+                cornerradius=6,
+            ),
+            text=[f"{v:.1f}%" for v in values],
+            textposition="outside",
+            textfont=dict(color="#4b5548", size=12),
+        ))
+
+        fig.update_layout(
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=50, t=10, b=10),
+            height=340,
+            xaxis=dict(
+                title="Confidence (%)",
+                range=[0, max(values) * 1.25],
+                showgrid=True,
+                gridcolor="rgba(75,85,72,0.07)",
+                tickfont=dict(color="#8a9184"),
+                title_font=dict(color="#8a9184", size=12),
+            ),
+            yaxis=dict(
+                autorange="reversed",
+                tickfont=dict(color="#4b5548", size=13),
+            ),
+            font=dict(family="Inter, sans-serif"),
+        )
+
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    except ImportError:
+        # Fallback to basic Streamlit bar chart if Plotly not installed
+        st.bar_chart(sorted_probs)
+
+    # ---- Medical disclaimer ----
+    st.markdown("""
+    <div class="disclaimer">
+        ⚠️ <strong>Medical Disclaimer</strong>: This AI prediction is for research
+        and educational purposes only. Always consult a qualified dermatologist
+        for proper diagnosis and treatment.
+    </div>
+    """, unsafe_allow_html=True)
+
+else:
+    # ---- Empty state ----
+    st.markdown("""
+    <div class="glass-card" style="text-align:center; padding:60px 28px;">
+        <p style="font-size:3rem; margin:0;">📷</p>
+        <p style="font-size:1.1rem; color:#555a52; margin-top:12px;">
+            Upload a skin lesion image above to get started.
+        </p>
+        <p style="font-size:0.85rem; color:#8a9184;">
+            The model will classify it into one of 8 categories and show you
+            exactly where it looked using Grad-CAM.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ================================================================
+# FOOTER
+# ================================================================
+st.markdown("""
+<div class="app-footer">
+    Built with PyTorch & Streamlit &nbsp;·&nbsp;
+    MobileNetV2 Architecture &nbsp;·&nbsp;
+    HAM10000 + DermNet Dataset<br>
+    81.19% Accuracy &nbsp;·&nbsp; 10,327 Training Images &nbsp;·&nbsp; 8 Classes
+</div>
+""", unsafe_allow_html=True)
