@@ -5,7 +5,11 @@ Imports all inference logic from inference_engine.py.
 
 import streamlit as st
 import numpy as np
+import torch
 from PIL import Image
+import tempfile
+import datetime
+import os
 
 from inference_engine import (
     load_model,
@@ -248,12 +252,12 @@ with st.sidebar:
         <p style="margin:4px 0 0; font-size:0.85rem; color:#6b7a66;">
             PyTorch MobileNetV2 · 8 Classes<br>
             Accuracy: <strong style="color:#3a3a38;">81.19%</strong><br>
-            Acne Precision: <strong style="color:#3a3a38;">99.36%</strong>
+            Acne Precision: <strong style="color:#3a3a38;">99.36%</strong><br>
+            <span style="color:#5a8f7b;">TTA</span> · <span style="color:#5a8f7b;">Focal Loss</span> · <span style="color:#5a8f7b;">Grad-CAM</span>
         </p>
     </div>
     """, unsafe_allow_html=True)
 
-    import torch
     device_label = "🟢 GPU (CUDA)" if torch.cuda.is_available() else "🔵 CPU"
     st.info(f"Running on: **{device_label}**")
 
@@ -539,6 +543,129 @@ if "result" in st.session_state:
         # Fallback to basic Streamlit bar chart if Plotly not installed
         st.bar_chart(sorted_probs)
 
+    # ---- Downloadable PDF clinical report ----
+    st.markdown('<p class="section-title">Clinical Documentation</p>', unsafe_allow_html=True)
+
+    try:
+        from fpdf import FPDF
+
+        def _generate_pdf(result, overlay_img, age=None, gender=None, notes=None):
+            """Generate a clinical PDF report."""
+
+            def _safe(text):
+                """Sanitise text for FPDF (Latin-1 only)."""
+                return str(text).replace("\u2014", "-").replace("\u2013", "-").encode("latin-1", "replace").decode("latin-1")
+
+            pdf = FPDF()
+            pdf.add_page()
+
+            # ---- Header ----
+            pdf.set_font("Helvetica", style="B", size=20)
+            pdf.cell(0, 15, "Derm-X: AI Dermatological Scan Report", ln=True, align="C")
+            pdf.set_font("Helvetica", size=11)
+            pdf.cell(0, 8, f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align="C")
+            pdf.ln(8)
+
+            # ---- Prediction ----
+            pdf.set_font("Helvetica", style="B", size=14)
+            pdf.cell(0, 10, _safe(f"Primary Finding: {result['predicted_class']}"), ln=True)
+            pdf.set_font("Helvetica", size=12)
+            pdf.cell(0, 8, f"Confidence: {result['confidence']:.1%}", ln=True)
+            pdf.cell(0, 8, _safe(f"Risk Level: {result['disease_info']['severity']}"), ln=True)
+            pdf.ln(4)
+            pdf.set_font("Helvetica", size=11)
+            pdf.multi_cell(0, 6, _safe(f"Description: {result['disease_info']['description']}"))
+            pdf.ln(4)
+
+            # ---- Patient data (if provided) ----
+            if age or (gender and gender != "Not specified") or notes:
+                pdf.set_font("Helvetica", style="B", size=12)
+                pdf.cell(0, 10, "Patient Information:", ln=True)
+                pdf.set_font("Helvetica", size=11)
+                if age:
+                    pdf.cell(0, 6, f"  Age: {age}", ln=True)
+                if gender and gender != "Not specified":
+                    pdf.cell(0, 6, f"  Gender: {gender}", ln=True)
+                if notes:
+                    pdf.multi_cell(0, 6, _safe(f"  Notes: {notes}"))
+                pdf.ln(4)
+            pdf.ln(2)
+
+            # ---- Images ----
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_orig:
+                Image.fromarray(result["img_resized"]).save(tmp_orig.name)
+                orig_path = tmp_orig.name
+
+            heat_path = None
+            if overlay_img is not None:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_heat:
+                    Image.fromarray(overlay_img).save(tmp_heat.name)
+                    heat_path = tmp_heat.name
+
+            pdf.set_font("Helvetica", style="B", size=12)
+            if heat_path:
+                pdf.cell(95, 8, "Original Image:", ln=False)
+                pdf.cell(95, 8, "Grad-CAM Heatmap:", ln=True)
+                y_pos = pdf.get_y()
+                pdf.image(orig_path, x=10, y=y_pos, w=80)
+                pdf.image(heat_path, x=105, y=y_pos, w=80)
+                pdf.ln(70)
+            else:
+                pdf.cell(0, 8, "Original Image:", ln=True)
+                pdf.image(orig_path, x=10, w=80)
+                pdf.ln(10)
+
+            # ---- Confidence table ----
+            pdf.set_font("Helvetica", style="B", size=12)
+            pdf.cell(0, 10, "Confidence Breakdown (All 8 Classes):", ln=True)
+            pdf.set_font("Helvetica", size=10)
+            for cls_name, prob in sorted(result["probabilities"].items(), key=lambda x: x[1], reverse=True):
+                pdf.cell(120, 6, f"  {cls_name}", ln=False)
+                pdf.cell(0, 6, f"{prob:.1%}", ln=True)
+            pdf.ln(6)
+
+            # ---- Disclaimer ----
+            pdf.set_font("Helvetica", style="I", size=9)
+            pdf.multi_cell(
+                0, 5,
+                "Disclaimer: This report was generated by the Derm-X experimental AI model. "
+                "It is not a substitute for professional medical advice, diagnosis, or treatment. "
+                "Always consult a qualified healthcare provider.",
+            )
+
+            # Cleanup temp files
+            try:
+                os.unlink(orig_path)
+                if heat_path:
+                    os.unlink(heat_path)
+            except OSError:
+                pass
+
+            return bytes(pdf.output())
+
+        # Build overlay for PDF (use default alpha=0.45)
+        pdf_overlay = None
+        if res["heatmap"] is not None:
+            pdf_overlay = overlay_heatmap(res["img_resized"], res["heatmap"], alpha=0.45)
+
+        pdf_bytes = _generate_pdf(
+            res, pdf_overlay,
+            age=patient_age,
+            gender=patient_gender,
+            notes=patient_notes,
+        )
+
+        st.download_button(
+            label="📄 Download PDF Clinical Report",
+            data=pdf_bytes,
+            file_name=f"DermX_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
+    except ImportError:
+        st.info("Install `fpdf2` to enable PDF report downloads: `pip install fpdf2`")
+
     # ---- Medical disclaimer ----
     st.markdown("""
     <div class="disclaimer">
@@ -569,8 +696,9 @@ else:
 st.markdown("""
 <div class="app-footer">
     Built with PyTorch & Streamlit &nbsp;·&nbsp;
-    MobileNetV2 Architecture &nbsp;·&nbsp;
-    HAM10000 + DermNet Dataset<br>
-    81.19% Accuracy &nbsp;·&nbsp; 10,327 Training Images &nbsp;·&nbsp; 8 Classes
+    MobileNetV2 + Focal Loss &nbsp;·&nbsp;
+    Test-Time Augmentation<br>
+    HAM10000 + DermNet &nbsp;·&nbsp;
+    81.19% Accuracy &nbsp;·&nbsp; 10,327 Images &nbsp;·&nbsp; 8 Classes
 </div>
 """, unsafe_allow_html=True)

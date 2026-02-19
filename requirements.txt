@@ -21,3 +21,4 @@ tqdm>=4.65.0
 
 # Deployment
 streamlit>=1.28.0
+fpdf2>=2.7.0

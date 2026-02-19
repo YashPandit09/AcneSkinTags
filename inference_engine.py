@@ -7,6 +7,7 @@ Handles model loading, image preprocessing, prediction, and Grad-CAM generation.
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
+import torchvision.transforms.functional as TF
 import numpy as np
 from PIL import Image
 import cv2
@@ -253,7 +254,10 @@ def predict(
     device: torch.device,
 ) -> Dict:
     """
-    Run full inference + Grad-CAM on a single PIL image.
+    Run full inference with Test-Time Augmentation (TTA) + Grad-CAM.
+
+    TTA averages logits from 3 views (original, horizontal flip,
+    vertical flip) for more robust predictions with no retraining.
 
     Args:
         model: Loaded PyTorch model.
@@ -272,17 +276,25 @@ def predict(
     """
     img_batch, img_resized = preprocess_image(image)
 
-    # ---- probabilities ----
+    # ---- TTA: 3-view averaged logits ----
+    img_on_device = img_batch.to(device)
+    img_hflip = TF.hflip(img_on_device)
+    img_vflip = TF.vflip(img_on_device)
+
     with torch.no_grad():
-        output = model(img_batch.to(device))
-        probs = torch.softmax(output, dim=1)[0]
-        pred_idx = output.argmax(dim=1).item()
+        out_orig = model(img_on_device)
+        out_hflip = model(img_hflip)
+        out_vflip = model(img_vflip)
+
+        avg_logits = (out_orig + out_hflip + out_vflip) / 3.0
+        probs = torch.softmax(avg_logits, dim=1)[0]
+        pred_idx = avg_logits.argmax(dim=1).item()
         confidence = probs[pred_idx].item()
 
     pred_class = CLASS_NAMES[pred_idx]
     prob_dict = {name: float(p) for name, p in zip(CLASS_NAMES, probs)}
 
-    # ---- Grad-CAM ----
+    # ---- Grad-CAM (on original view only) ----
     heatmap = None
     try:
         heatmap, _ = generate_gradcam(model, img_batch, device)
