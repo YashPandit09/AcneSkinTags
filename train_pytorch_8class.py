@@ -4,6 +4,7 @@ Combines 7 classes from HAM10000 with Acne from DermNet for complete 8-class tra
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torch.amp import autocast, GradScaler
@@ -18,6 +19,34 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 import config
+
+
+# ============================================================
+# FOCAL LOSS — focuses training on hard-to-classify examples
+# ============================================================
+class FocalLoss(nn.Module):
+    """
+    Focal Loss forces the model to focus on hard-to-classify examples
+    (e.g. Melanoma, Dermatofibroma) and down-weights easy examples
+    (e.g. Melanocytic nevi).  gamma=2 is the standard sweet spot.
+    """
+
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
 
 # ============================================================
 # STEP 1: GPU SETUP
@@ -164,7 +193,7 @@ def get_dataloaders(batch_size=64, num_workers=0):
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
         transforms.RandomRotation(20),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
@@ -332,7 +361,7 @@ def main(args):
     
     model = build_model(num_classes=8, device=device)
     
-    criterion = nn.CrossEntropyLoss()
+    criterion = FocalLoss(gamma=2.0)  # Replaces CrossEntropyLoss for better minority-class recall
     optimizer = optim.Adam(model.classifier.parameters(), lr=args.lr)
     scaler = GradScaler() if args.use_amp else None
     
