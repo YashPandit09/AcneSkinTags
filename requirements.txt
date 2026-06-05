@@ -16,6 +16,9 @@ matplotlib>=3.5.0
 seaborn>=0.12.0
 plotly>=5.15.0
 
+# Statistics (longitudinal acne treatment analysis)
+statsmodels>=0.14.0
+
 # Utilities
 tqdm>=4.65.0
 

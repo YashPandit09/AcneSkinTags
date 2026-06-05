@@ -186,6 +186,49 @@ The `preprocessing/` module provides framework-agnostic image processing:
 
 ---
 
+## Trust & Safety (Clinical Reliability)
+
+A skin-cancer screener is only useful if its confidence can be *trusted* and it
+knows when **not** to answer. These four additions sit on top of the trained
+model — no retraining required — and turn a raw classifier into a safer
+decision-support tool. All four ship with `--self-test` modes (and
+`tests/test_trust.py`) that validate the math without a checkpoint.
+
+| Module | Problem it solves | Run |
+|--------|-------------------|-----|
+| `calibration.py` | Raw softmax is over-confident; a reported "97%" must mean 97%. Fits **temperature scaling** and reports **Expected Calibration Error** + a reliability diagram. | `python calibration.py` |
+| `ood_detection.py` | Users upload non-skin photos. **MSP / energy** thresholds let the model **abstain** instead of confidently mislabelling. | `python ood_detection.py --fit` |
+| `uncertainty.py` | TTA gives a robust point estimate but no "how sure am I?". **MC-Dropout** yields predictive entropy + epistemic uncertainty. | `python uncertainty.py --image <img>` |
+| `safe_inference.py` | One entry point composing **TTA → calibration → OOD gate → MC-Dropout → abstention**. Drop-in superset of `inference_engine.predict`. | `python safe_inference.py --image <img>` |
+
+```bash
+# After training (best_model_8class_pytorch.pth present):
+python calibration.py            # writes calibration_temperature.json + reliability diagram
+python ood_detection.py --fit    # writes ood_threshold.json
+python safe_inference.py --image data/sample.jpg   # calibrated, OOD-gated, uncertainty-aware
+
+# Validate the math anytime (no model/data needed):
+pytest tests/test_trust.py -q
+```
+
+To adopt in the Streamlit app, swap `inference_engine.predict(...)` for
+`safe_inference.predict_with_trust(...)` — it returns the same keys plus
+`predictive_entropy`, `is_ood`, `abstain`, and a user-facing `message`.
+
+## Longitudinal Acne Tracking
+
+`analysis/acne_longitudinal.py` answers the question a patient actually asks —
+*"is my treatment working?"* — by modelling daily acne severity over time
+(`data/sim_acne.csv`, 10 patients × Baseline / Antibiotics / Cream). A linear
+mixed-effects model (random intercept per patient) estimates each treatment's
+effect versus baseline.
+
+```bash
+python analysis/acne_longitudinal.py   # trajectory + distribution plots + effect table
+```
+
+---
+
 ## Future Recommendations
 
 - **Archive Legacy TensorFlow Scripts**: `data_loader_enhanced.py`, `data_loader.py`, and `explainability/gradcam.py` are TensorFlow-based and no longer part of the active pipeline. Archiving them will reduce technical debt and avoid confusion.
