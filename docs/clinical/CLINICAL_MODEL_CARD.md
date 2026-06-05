@@ -57,9 +57,9 @@ Held-out test set, **n = 10,327** images (source: `classification_report_8class.
   (`clinical_triage.py`) that refers on aggregated P(concerning) ≥ 0.10 rather than
   top-1, to raise effective sensitivity.
 
-> ⚠️ `per_class_metrics.csv` in the repo is **inconsistent/corrupted** (mislabeled
-> supports, near-zero recalls) and must not be cited; regenerate or delete it.
-> Use `classification_report_8class.txt`.
+> Note: `per_class_metrics.csv` was previously corrupted (mislabeled supports,
+> near-zero recalls). It has been **regenerated from `classification_report_8class.txt`**
+> and now matches the table above.
 
 ## 5. The melanoma-sensitivity caveat (read this first)
 At this operating point the model **misses ~58% of melanomas** (recall 42.2%). As an

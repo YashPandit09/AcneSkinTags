@@ -30,5 +30,5 @@ npx @marp-team/marp-cli docs/clinical/PITCH_DECK.md --pdf
 - The **melanoma sensitivity (42.2%)** is stated up front everywhere — owning it is
   what earns clinical trust.
 - No claim of validation, safety, or regulatory clearance is made anywhere.
-- `per_class_metrics.csv` is **corrupted** (mislabeled) — cite
-  `classification_report_8class.txt` instead; regenerate/delete the CSV.
+- `per_class_metrics.csv` (previously corrupted/mislabeled) has been
+  **regenerated** to match `classification_report_8class.txt`.

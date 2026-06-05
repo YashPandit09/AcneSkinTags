@@ -18,6 +18,15 @@ from inference_engine import (
     CLASS_NAMES,
 )
 
+# Safety layer (calibration + OOD + MC-dropout uncertainty) and triage policy.
+# Imported defensively so the app still runs if these modules are absent.
+try:
+    from safe_inference import predict_with_trust
+    from clinical_triage import triage
+    _SAFE_LAYER = True
+except Exception:
+    _SAFE_LAYER = False
+
 # ================================================================
 # PAGE CONFIG
 # ================================================================
@@ -253,7 +262,8 @@ with st.sidebar:
             PyTorch MobileNetV2 · 8 Classes<br>
             Accuracy: <strong style="color:#3a3a38;">81.19%</strong><br>
             Acne Precision: <strong style="color:#3a3a38;">99.36%</strong><br>
-            <span style="color:#5a8f7b;">TTA</span> · <span style="color:#5a8f7b;">Focal Loss</span> · <span style="color:#5a8f7b;">Grad-CAM</span>
+            <span style="color:#5a8f7b;">TTA</span> · <span style="color:#5a8f7b;">Focal Loss</span> · <span style="color:#5a8f7b;">Grad-CAM</span><br>
+            <span style="color:#b5694d;">Calibrated</span> · <span style="color:#b5694d;">OOD-gated</span> · <span style="color:#b5694d;">Uncertainty</span> · <span style="color:#b5694d;">Triage</span>
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -309,9 +319,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("""
     <div class="disclaimer">
-        ⚠️ <strong>Disclaimer</strong>: This tool is for research &
-        educational purposes only. It does not replace professional
-        medical diagnosis.
+        ⚠️ <strong>Research prototype — not a medical device.</strong>
+        For research & educational use only. Decision-support, not diagnosis;
+        every result requires review by a qualified dermatologist. Known
+        limitation: melanoma sensitivity ≈ 42% at this operating point.
     </div>
     """, unsafe_allow_html=True)
 
@@ -360,9 +371,19 @@ if uploaded_file is not None:
 
     # ---- Analyze button ----
     if st.button("🔍  Analyze Image", type="primary", use_container_width=True):
-        with st.spinner("Loading model & running inference …"):
-            model, device = load_model()
-            result = predict(model, image, device)
+        if _SAFE_LAYER:
+            with st.spinner("Running TTA → calibration → OOD gate → MC-dropout …"):
+                model, device = load_model()
+                result = predict_with_trust(model, image, device)
+                result["triage"] = triage(
+                    result["probabilities"],
+                    abstain=result["abstain"],
+                    is_ood=result["is_ood"],
+                )
+        else:
+            with st.spinner("Loading model & running inference …"):
+                model, device = load_model()
+                result = predict(model, image, device)
 
         st.session_state["result"] = result
 
@@ -374,6 +395,23 @@ if "result" in st.session_state:
 
     st.markdown("---")
     st.markdown('<p class="section-title">Diagnosis Results</p>', unsafe_allow_html=True)
+
+    # ---- Safety layer: out-of-distribution / abstention / calibration banner ----
+    if res.get("is_ood"):
+        st.error(f"🚫 {res.get('message', 'Input does not look like skin (out-of-distribution) — no diagnosis made.')}")
+    elif res.get("abstain"):
+        st.warning(f"🤔 {res.get('message', 'Low-confidence / high-uncertainty result — please consult a clinician.')}")
+    elif "temperature" in res:
+        st.success("✅ Calibrated prediction (temperature-scaled confidence, OOD-checked).")
+
+    # ---- Safety-first triage recommendation ----
+    _tri = res.get("triage")
+    if _tri:
+        _kind = {"urgent": "error", "soon": "warning", "review": "warning",
+                 "routine": "success", "n/a": "info"}.get(_tri["urgency"], "info")
+        _icon = {"urgent": "🔴", "soon": "🟠", "review": "🟡",
+                 "routine": "🟢", "n/a": "⚪"}.get(_tri["urgency"], "⚪")
+        getattr(st, _kind)(f"{_icon} **Triage ({_tri['urgency'].upper()}):** {_tri['recommendation']}")
 
     # ---- Prediction metrics row ----
     m1, m2, m3 = st.columns(3)
@@ -397,6 +435,18 @@ if "result" in st.session_state:
         </p>
     </div>
     """, unsafe_allow_html=True)
+
+    # ---- Safety metrics row (only when the trust layer ran) ----
+    if "predictive_entropy" in res:
+        u1, u2 = st.columns(2)
+        with u1:
+            st.metric("Uncertainty (entropy)", f"{res['predictive_entropy']:.2f}",
+                      help="MC-dropout predictive entropy; higher = the model is less certain.")
+        with u2:
+            pc = res.get("triage", {}).get("p_concerning")
+            if pc is not None:
+                st.metric("P(concerning)", f"{pc:.1%}",
+                          help="Aggregated probability of Melanoma + Basal cell carcinoma + Actinic keratoses.")
 
     # ---- Risk gauge chart ----
     try:
@@ -575,6 +625,22 @@ if "result" in st.session_state:
             pdf.ln(4)
             pdf.set_font("Helvetica", size=11)
             pdf.multi_cell(0, 6, _safe(f"Description: {result['disease_info']['description']}"))
+            pdf.ln(4)
+
+            # ---- Safety layer (calibration / uncertainty / triage) ----
+            if "predictive_entropy" in result:
+                pdf.set_font("Helvetica", size=11)
+                pdf.cell(0, 6, _safe(
+                    "Confidence is temperature-calibrated. "
+                    f"Uncertainty (entropy): {result['predictive_entropy']:.2f}"
+                    f"{' | OUT-OF-DISTRIBUTION (non-skin)' if result.get('is_ood') else ''}"
+                    f"{' | LOW-CONFIDENCE / ABSTAIN' if result.get('abstain') else ''}"), ln=True)
+            tri = result.get("triage")
+            if tri:
+                pdf.set_font("Helvetica", style="B", size=12)
+                pdf.cell(0, 9, _safe(f"Triage Recommendation ({tri['urgency'].upper()}):"), ln=True)
+                pdf.set_font("Helvetica", size=11)
+                pdf.multi_cell(0, 6, _safe(tri["recommendation"]))
             pdf.ln(4)
 
             # ---- Patient data (if provided) ----
